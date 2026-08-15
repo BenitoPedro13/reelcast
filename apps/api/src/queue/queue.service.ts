@@ -25,7 +25,14 @@ export class QueueService implements OnModuleDestroy {
   }
 
   async enqueueTranscode(job: HlsTranscodeJob): Promise<void> {
-    await this.queue.add('transcode', job);
+    // attempts/backoff are set here (the producer), not in apps/worker: the
+    // shim reads job.opts.attempts to decide whether it's the final attempt
+    // (docs/tasks/TASK-hls-worker.md §2.2/§2.7) rather than owning a second
+    // copy of this policy.
+    await this.queue.add('transcode', job, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
   }
 
   async onModuleDestroy(): Promise<void> {

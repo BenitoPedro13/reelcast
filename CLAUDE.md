@@ -10,16 +10,17 @@
 
 ## 0. Project context
 
-**Spec-stage project. No code exists yet.** The design lives in `docs/spec.md`. Reelcast is
-a small, YouTube-shaped on-demand video platform: upload a file, the backend transcodes it
-into an adaptive-bitrate HLS ladder, a browser player watches it back and switches quality
-with bandwidth. See `docs/spec.md` §1–§4 for the full problem statement, goals, and
-non-goals — in short: VOD only (no live streaming), no auth/DRM/captions in v1, HLS only
-(no DASH).
+The design lives in `docs/spec.md`. Reelcast is a small, YouTube-shaped on-demand video
+platform: upload a file, the backend transcodes it into an adaptive-bitrate HLS ladder, a
+browser player watches it back and switches quality with bandwidth. See `docs/spec.md`
+§1–§4 for the full problem statement, goals, and non-goals — in short: VOD only (no live
+streaming), no auth/DRM/captions in v1, HLS only (no DASH).
 
-**Status:** spec drafted. Next step is a scaffold task doc (repo layout, package manager,
-`go.mod`, local docker-compose for Postgres/Redis/object storage) before any code exists —
-see `docs/spec.md` §"Next step".
+**Status:** end-to-end pipeline works. Three tasks committed: scaffold (`7fc5014`), DB
+schema + upload API (`79cdbf3`), and the HLS worker (this task) — upload now reaches
+`ready` with a real adaptive ladder in object storage, not just `queued`. Next up:
+`apps/web`'s browse/watch/upload UI (spec §2 items 1, 5) — nothing consumes `GET /videos`
+yet.
 
 ### Stack (per spec §6 — see `docs/spec.md` for full rationale)
 
@@ -27,7 +28,7 @@ see `docs/spec.md` §"Next step".
 |---|---|
 | Frontend | Next.js (TS) + shadcn/ui + `hls.js` for adaptive playback |
 | Backend API | NestJS (TS), a **separate service** from the frontend — not Next.js API routes (explicit choice, see spec §11) |
-| Worker | Go + ffmpeg (shell out, never reimplement codecs) |
+| Worker | Go + ffmpeg (shell out, never reimplement codecs), consumed via a thin `apps/worker` TS BullMQ shim — see §4 |
 | Queue | Redis + BullMQ — one job type, chosen over NATS for legibility (spec §6) |
 | Database | PostgreSQL + Drizzle ORM |
 | Object storage | S3-compatible, public-read bucket behind a CDN (Cloudflare R2 default pick) |
@@ -124,14 +125,17 @@ a generator produces correctly is the wrong default.
 ```
 apps/web       Next.js frontend — browse, watch, upload UI (TS)
 apps/api       NestJS backend — video metadata, presigned uploads, job status (TS)
-worker/        Go worker — ffprobe + ffmpeg HLS packaging
+apps/worker    Plain TS BullMQ shim — holds the hls-transcode job lock, spawns worker/'s
+               Go binary, nothing else (no official Go BullMQ client — see
+               docs/tasks/TASK-hls-worker.md §2.1)
+worker/        Go binary — ffprobe + ffmpeg HLS packaging + S3 upload + Postgres writes
 infra/         docker-compose.yml — local Postgres + Redis + MinIO (R2 stand-in)
 docs/          spec, task docs
 ```
 
 - TS side: pick one package manager at scaffold time (record the choice in the scaffold
   task doc) and use workspace deps for anything shared between `apps/web` and `apps/api`
-  — no copy-paste.
+  — no copy-paste. `apps/worker` is deliberately plain TS (no Nest): it has no HTTP surface.
 - Go side: standard module layout under `worker/`, `go.mod` owns versions.
 - The **queue job payload** (`{ videoId, sourceKey }`) and the **videos/renditions schema**
   (spec §8) are the only contracts between the TS and Go sides — no other JSON shape

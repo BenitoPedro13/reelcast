@@ -61,23 +61,35 @@ single portfolio project can actually finish and explain.
       │ REST (metadata,                 ▲                     │
       │ status polling)                 │ upload output       │
       ▼                                 │                     │
-┌────────────┐   enqueue job     ┌──────┴───────┐              │
-│  API        │ ─────────────────▶│ Redis/BullMQ │              │
-│ (Nest,      │◀──────────────────│ queue        │              │
-│  separate   │  status updates   └──────┬───────┘              │
-│  service)   │                          │ dequeue              │
-└─────┬───────┘                          ▼                      │
-      │ reads/writes            ┌──────────────┐                │
-      ▼                         │ Worker (Go)   │────────────────┘
-┌────────────┐                  │ ffprobe +     │
-│ Postgres    │◀─────────────────│ ffmpeg HLS    │
-│ (Drizzle)   │  status updates  │ packaging     │
-└────────────┘                  └──────────────┘
+┌────────────┐   enqueue job     ┌──────────────┐
+│  API        │ ─────────────────▶│ Redis/BullMQ │
+│ (Nest,      │◀──────────────────│ queue        │
+│  separate   │  status updates   └──────┬───────┘
+│  service)   │                          │ dequeue
+└─────┬───────┘                          ▼
+      │ reads/writes            ┌──────────────────────┐
+      ▼                         │ apps/worker (TS shim) │
+┌────────────┐                  │ holds the BullMQ job  │
+│ Postgres    │◀───────┐        │ lock, nothing else    │
+│ (Drizzle)   │        │        └──────────┬────────────┘
+└────────────┘         │                   │ spawn, argv
+                        │ status +          ▼
+                        │ renditions   ┌──────────────────────┐
+                        └──────────────│ worker/ (Go binary)   │────▶ Object storage
+                                       │ ffprobe + ffmpeg HLS  │      (segments +
+                                       │ packaging + S3 upload │       manifests)
+                                       └──────────────────────┘
 ```
 
-Two services, not one: **API** (Node/Nest, I/O-bound — metadata, presigned URLs, job
-status) and **worker** (Go, CPU-bound — ffmpeg). Same rationale as Plexus's Go/TS split:
-don't run CPU-bound transcoding inside the same process handling HTTP traffic.
+Three pieces, not two: **API** (Node/Nest, I/O-bound — metadata, presigned URLs, job
+status), **apps/worker** (TS, a thin BullMQ consumer — holds the job lock and spawns the Go
+binary, nothing else), and **worker/** (Go, CPU-bound — ffprobe/ffmpeg/S3/Postgres). The
+API still enqueues `{ videoId, sourceKey }` onto `hls-transcode` exactly as before; only the
+consumer side gained a step. The split exists because BullMQ has no official Go client (see
+`docs/tasks/TASK-hls-worker.md` §2.1) — official Node BullMQ owns retry/backoff/stalled
+recovery (the guarantee §10 tests), while the Go binary keeps every byte of media, storage,
+and database work, matching Plexus's Go/TS split of not running CPU-bound transcoding
+inside the same process that handles queue/HTTP traffic.
 
 ## 6. Stack
 
@@ -86,7 +98,7 @@ don't run CPU-bound transcoding inside the same process handling HTTP traffic.
 | Frontend | Next.js (latest stable major — verify, don't pin from memory), shadcn/ui, `hls.js` | `hls.js` is the standard adaptive-HLS player for non-Safari browsers; Safari gets native `<video>` HLS support. |
 | Backend API | Node.js + NestJS, separate service/repo folder from the worker | Explicit ask: separate backend, not Next.js API routes. Nest gives structured modules for videos/upload/jobs without much ceremony. |
 | Worker | Go + ffmpeg (shell out, never reimplement codecs) | Same "ffmpeg/libvips do the media work" rule as Plexus. One processor: source → HLS ladder + thumbnail. |
-| Queue | Redis + BullMQ | Simpler and more legible to a reviewer than NATS JetStream — this project has one job type, not a general dispatch/replay system, so the heavier tool isn't earning its keep here. |
+| Queue | Redis + BullMQ, consumed by a thin `apps/worker` TS shim that spawns the Go binary per job | Simpler and more legible to a reviewer than NATS JetStream — this project has one job type, not a general dispatch/replay system, so the heavier tool isn't earning its keep here. The shim exists because BullMQ has no official Go client (`docs/tasks/TASK-hls-worker.md` §2.1); it holds the job lock only, all media/storage/DB work stays in Go. |
 | Database | PostgreSQL + Drizzle ORM | Consistent with Plexus tooling; no relational need this project has that Postgres doesn't cover. |
 | Object storage | S3-compatible, public-read bucket behind a CDN — **Cloudflare R2** is the default pick (free egress matters once a demo gets traffic) | HLS playback fetches many small segments continuously; presigned-per-segment URLs don't fit that access pattern the way a public CDN-backed bucket does. `[VERIFY: R2 current public-bucket + custom domain setup steps]` |
 | Realtime status | Short-interval polling (`GET /videos/:id`) | No SSE/WebSocket infra for a single job type — polling is a defensible, easy-to-explain simplification here. |
@@ -116,10 +128,17 @@ don't run CPU-bound transcoding inside the same process handling HTTP traffic.
 | 480p | 1400 kbps | 480 |
 | 360p | 800 kbps | 360 |
 
-`[VERIFY: exact ffmpeg multi-variant HLS invocation against current ffmpeg docs —
-`-var_stream_map`, `-master_pl_name`, `-hls_time`, `-hls_playlist_type vod`, segment naming
-— before the worker task doc is written; codec/flag behavior is not to be guessed per the
-no-invented-API rule this project borrows from Plexus.]`
+**Resolved** (measured against ffmpeg 9.0, see `docs/tasks/TASK-hls-worker.md` §2.4/§5 for
+the full invocation and evidence): one ffmpeg process per source, `split` + `scale` per
+rendition, `-hls_playlist_type vod` with `-f hls`/`-hls_time 4`/`-var_stream_map` naming
+variants by resolution (`name:1080p` etc.), 4-second segments named `seg%05d.ts`. Two
+things the flag docs alone didn't reveal:
+
+- `-force_key_frames "expr:gte(t,n_forced*4)"` is required, not cosmetic — without it,
+  segments land on natural keyframes (measured 4.8s/3.2s/4.8s…) and aren't guaranteed to
+  align across renditions, which stalls the adaptive-switching demo in §10 at every switch.
+- A silent source hard-fails `-map a:0` (`Stream map '' matches no streams`); the command
+  builder branches on `ffprobe`-detected audio presence.
 
 ### 7.3 Thumbnail
 
@@ -165,7 +184,12 @@ renditions
   don't publish a number until measured]`
 - Each rendition's *actual* encoded bitrate falls within ±15% of its table target
   (ffprobe the output, assert in a golden-fixture test — same "measured, not eyeballed"
-  rule Plexus applies to recipe fidelity).
+  rule Plexus applies to recipe fidelity). **Measured on the video stream only**
+  (`ffprobe -select_streams v:0`, packet bytes summed over the rendition's segments), not
+  whole-segment bytes: muxed segment bytes include the 128kbps audio track plus MPEG-TS
+  overhead, which pushed 360p to +19.2% against target in measurement — a false failure of
+  an encoder that was in fact exact on the video stream (`docs/tasks/TASK-hls-worker.md`
+  §5).
 - Adaptive switching is demonstrable: throttle bandwidth in devtools mid-playback and
   observe the player drop to a lower rendition without a playback stall.
 - A worker killed mid-job does not silently lose the video: job reappears in the queue

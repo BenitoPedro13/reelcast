@@ -368,6 +368,34 @@ importers:
         specifier: ^5
         version: 5.9.3
 
+  apps/worker:
+    dependencies:
+      bullmq:
+        specifier: ^6.1.0
+        version: 6.1.0(ioredis@6.0.0)(pg@8.23.0)
+      ioredis:
+        specifier: ^6.0.0
+        version: 6.0.0
+    devDependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.1110.0
+        version: 3.1110.0
+      '@types/node':
+        specifier: ^22.10.7
+        version: 22.20.1
+      '@types/pg':
+        specifier: ^8.21.0
+        version: 8.21.0
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
 packages:
 
   '@alloc/quick-lru@5.2.0':
