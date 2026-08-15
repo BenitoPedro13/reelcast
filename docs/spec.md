@@ -22,6 +22,10 @@ single portfolio project can actually finish and explain.
 
 ## 2. Goals (v1 / P0)
 
+**Status:** all six items done as of `docs/tasks/TASK-web-playback-ui.md`. Items 2/3/6
+landed with the HLS worker; items 1/4/5 (browser upload, no-reload status, browse/watch
+pages with a visibly adaptive player) landed with `apps/web`. P0 is feature-complete.
+
 1. Upload a video file from the browser.
 2. Backend transcodes it into an adaptive bitrate **HLS ladder** (multiple
    resolution/bitrate renditions + a master manifest).
@@ -100,7 +104,7 @@ inside the same process that handles queue/HTTP traffic.
 | Worker | Go + ffmpeg (shell out, never reimplement codecs) | Same "ffmpeg/libvips do the media work" rule as Plexus. One processor: source → HLS ladder + thumbnail. |
 | Queue | Redis + BullMQ, consumed by a thin `apps/worker` TS shim that spawns the Go binary per job | Simpler and more legible to a reviewer than NATS JetStream — this project has one job type, not a general dispatch/replay system, so the heavier tool isn't earning its keep here. The shim exists because BullMQ has no official Go client (`docs/tasks/TASK-hls-worker.md` §2.1); it holds the job lock only, all media/storage/DB work stays in Go. |
 | Database | PostgreSQL + Drizzle ORM | Consistent with Plexus tooling; no relational need this project has that Postgres doesn't cover. |
-| Object storage | S3-compatible, public-read bucket behind a CDN — **Cloudflare R2** is the default pick (free egress matters once a demo gets traffic) | HLS playback fetches many small segments continuously; presigned-per-segment URLs don't fit that access pattern the way a public CDN-backed bucket does. `[VERIFY: R2 current public-bucket + custom domain setup steps]` |
+| Object storage | S3-compatible, public-read bucket behind a CDN — **Cloudflare R2** is the default pick (free egress matters once a demo gets traffic) | HLS playback fetches many small segments continuously; presigned-per-segment URLs don't fit that access pattern the way a public CDN-backed bucket does. **Resolved locally:** the API owns a `S3_PUBLIC_BASE_URL` config value, separate from the SDK's signing `S3_ENDPOINT`, and maps `masterManifestKey`/`thumbnailKey` to `masterManifestUrl`/`thumbnailUrl` in its `GET /videos*` responses — bucket key structure never crosses into the browser bundle (`docs/tasks/TASK-web-playback-ui.md` §2.2). `[VERIFY: R2 current public-bucket + custom domain setup steps]` still open for the deploy-time value of that same config var. |
 | Realtime status | Short-interval polling (`GET /videos/:id`) | No SSE/WebSocket infra for a single job type — polling is a defensible, easy-to-explain simplification here. |
 | Deploy | Railway (API + worker + Postgres + Redis), R2 for storage, Vercel or Railway for frontend | Reuses infra already set up for Plexus. |
 
@@ -205,8 +209,13 @@ renditions
   per §9.
 - **CDN in front of R2** — R2's own public bucket vs. a Cloudflare CDN/Worker in front for
   cache control headers on manifests (short TTL) vs. segments (long TTL, immutable).
-  `[VERIFY: R2 public bucket default cache behavior before deciding this needs a CDN
-  layer at all]`
+  **Local answer resolved:** the browser reads manifests/segments/thumbnails straight from
+  the public-read bucket origin via `S3_PUBLIC_BASE_URL` (`http://localhost:9000/reelcast`
+  against MinIO); MinIO's CORS is permissive enough for both the presigned PUT and hls.js's
+  segment GETs with no compose change (`docs/tasks/TASK-web-playback-ui.md` §1). Still open
+  for deploy: R2 doesn't reflect arbitrary origins the way MinIO's default config does, so
+  `[VERIFY: R2 CORS policy + whether a CDN/Worker in front is actually needed]` before the
+  first deploy.
 - **Backend framework** — Nest (chosen above) vs. a lighter Fastify/Express service. Nest
   wins for now on consistency with Plexus experience; revisit if the API surface stays
   this small (4-5 endpoints) and Nest's structure starts feeling like overhead.

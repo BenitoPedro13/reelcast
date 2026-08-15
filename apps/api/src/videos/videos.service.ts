@@ -66,11 +66,28 @@ export class VideosService {
       .from(renditions)
       .where(eq(renditions.videoId, id));
 
-    return { ...video, renditions: videoRenditions };
+    return { ...this.withUrls(video), renditions: videoRenditions };
   }
 
-  async findAll(status: Video['status'] = 'ready'): Promise<Video[]> {
-    return this.db.select().from(videos).where(eq(videos.status, status));
+  async findAll(status: Video['status'] = 'ready') {
+    const rows = await this.db
+      .select()
+      .from(videos)
+      .where(eq(videos.status, status));
+
+    return rows.map((video) => this.withUrls(video));
+  }
+
+  private withUrls(video: Video) {
+    return {
+      ...video,
+      masterManifestUrl: video.masterManifestKey
+        ? this.storage.publicUrl(video.masterManifestKey)
+        : null,
+      thumbnailUrl: video.thumbnailKey
+        ? this.storage.publicUrl(video.thumbnailKey)
+        : null,
+    };
   }
 
   private async getOrThrow(id: string): Promise<Video> {

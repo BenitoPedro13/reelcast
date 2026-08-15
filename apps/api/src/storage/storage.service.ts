@@ -9,9 +9,11 @@ const PRESIGNED_PUT_EXPIRY_SECONDS = 900;
 export class StorageService {
   private readonly client: S3Client;
   private readonly bucket: string;
+  private readonly publicBaseUrl: string;
 
   constructor(config: ConfigService) {
     this.bucket = config.getOrThrow<string>('S3_BUCKET');
+    this.publicBaseUrl = config.getOrThrow<string>('S3_PUBLIC_BASE_URL');
     this.client = new S3Client({
       endpoint: config.getOrThrow<string>('S3_ENDPOINT'),
       region: config.getOrThrow<string>('S3_REGION'),
@@ -28,5 +30,9 @@ export class StorageService {
     return getSignedUrl(this.client, command, {
       expiresIn: PRESIGNED_PUT_EXPIRY_SECONDS,
     });
+  }
+
+  publicUrl(key: string): string {
+    return `${this.publicBaseUrl}/${key}`;
   }
 }

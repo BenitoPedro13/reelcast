@@ -16,6 +16,9 @@ describe('Videos (e2e)', () => {
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, transform: true }),
     );
+    app.enableCors({
+      origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
+    });
     await app.init();
   });
 
@@ -24,10 +27,7 @@ describe('Videos (e2e)', () => {
   });
 
   it('rejects a video with no title', async () => {
-    await request(app.getHttpServer())
-      .post('/videos')
-      .send({})
-      .expect(400);
+    await request(app.getHttpServer()).post('/videos').send({}).expect(400);
   });
 
   it('runs the full upload -> complete -> status flow against real infra', async () => {
@@ -63,12 +63,30 @@ describe('Videos (e2e)', () => {
     const statusRes = await request(app.getHttpServer())
       .get(`/videos/${id}`)
       .expect(200);
-    expect(statusRes.body).toMatchObject({ id, status: 'queued', renditions: [] });
+    expect(statusRes.body).toMatchObject({
+      id,
+      status: 'queued',
+      renditions: [],
+      masterManifestUrl: null,
+      thumbnailUrl: null,
+    });
   });
 
   it('404s for an unknown video id', async () => {
     await request(app.getHttpServer())
       .get('/videos/00000000-0000-0000-0000-000000000000')
       .expect(404);
+  });
+
+  it('allows the configured web origin via CORS preflight', async () => {
+    const res = await request(app.getHttpServer())
+      .options('/videos')
+      .set('Origin', 'http://localhost:3000')
+      .set('Access-Control-Request-Method', 'GET')
+      .expect(204);
+
+    expect(res.headers['access-control-allow-origin']).toBe(
+      'http://localhost:3000',
+    );
   });
 });

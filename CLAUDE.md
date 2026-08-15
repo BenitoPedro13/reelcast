@@ -16,11 +16,14 @@ browser player watches it back and switches quality with bandwidth. See `docs/sp
 §1–§4 for the full problem statement, goals, and non-goals — in short: VOD only (no live
 streaming), no auth/DRM/captions in v1, HLS only (no DASH).
 
-**Status:** end-to-end pipeline works. Three tasks committed: scaffold (`7fc5014`), DB
-schema + upload API (`79cdbf3`), and the HLS worker (this task) — upload now reaches
-`ready` with a real adaptive ladder in object storage, not just `queued`. Next up:
-`apps/web`'s browse/watch/upload UI (spec §2 items 1, 5) — nothing consumes `GET /videos`
-yet.
+**Status:** P0 feature-complete. Four tasks committed: scaffold (`7fc5014`), DB schema +
+upload API (`79cdbf3`), the HLS worker (`3dbf0b2`), and `apps/web`'s browse/upload/watch UI
+(`docs/tasks/TASK-web-playback-ui.md`) — upload now goes all the way from a browser file
+picker through a real ffmpeg-produced adaptive ladder to a playing `hls.js` player that
+visibly switches rendition under throttled bandwidth. `apps/api` also grew CORS, a
+`PORT`/`WEB_ORIGIN` split from `apps/web`'s port, and a `S3_PUBLIC_BASE_URL`-based
+key→URL mapping so the browser never sees bucket keys directly. Next up: deploy (R2 CORS +
+public bucket, Railway/Vercel) or a P1 item from spec §9.
 
 ### Stack (per spec §6 — see `docs/spec.md` for full rationale)
 
